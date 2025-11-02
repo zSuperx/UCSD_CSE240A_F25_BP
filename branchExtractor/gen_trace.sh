@@ -1,4 +1,3 @@
-#!/bin/bash
 BRANCH_EXT_ROOT=$(dirname $(realpath -s $0))
 
 make -C ${BRANCH_EXT_ROOT}
