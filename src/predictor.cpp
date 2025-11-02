@@ -32,7 +32,7 @@ const char *bpName[4] = {"Static", "Gshare", "Tournament", "Custom"};
 // tournament
 #define TR_LOC_HIST_BITS 10 // Number of bits used for Local History
 #define TR_LOC_MASK_BITS 10 // Number of PC bits to use to index into LHT
-#define TR_GLB_HIST_BITS 15 // Number of bits used for Global History
+#define TR_GLB_HIST_BITS 12 // Number of bits used for Global History
 #define TR_CHOOSER_BITS 12  // Number of bits used for chooser
 
 int bpType; // Branch Prediction Type
@@ -64,11 +64,11 @@ uint8_t tr_loc_bht[1 << TR_LOC_HIST_BITS];
 //------------------------------------//
 
 static inline uint8_t sat_inc(uint8_t v, unsigned bits) {
-    uint8_t max = (uint8_t)((1u << bits) - 1u);
-    return (v < max) ? (v + 1u) : max;
+  uint8_t max = (uint8_t)((1u << bits) - 1u);
+  return (v < max) ? (v + 1u) : max;
 }
 static inline uint8_t sat_dec(uint8_t v, unsigned bits) {
-    return (v > 0u) ? (v - 1u) : 0u;
+  return (v > 0u) ? (v - 1u) : 0u;
 }
 
 // Initialize the predictor
@@ -130,14 +130,18 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
   uint8_t loc_prediction = old_loc >> 2;
 
   // Update global bht
-  tr_glb_bht[glb_bht_index] = outcome ? sat_inc(old_glb, 2) : sat_dec(old_glb, 2);
+  tr_glb_bht[glb_bht_index] =
+      outcome ? sat_inc(old_glb, 2) : sat_dec(old_glb, 2);
 
   // Update local bht
-  tr_loc_bht[loc_bht_index] = outcome ? sat_inc(old_loc, 3) : sat_dec(old_loc, 3);
+  tr_loc_bht[loc_bht_index] =
+      outcome ? sat_inc(old_loc, 3) : sat_dec(old_loc, 3);
 
   // If global and local guessed differently, then update the correct one
   if (glb_prediction != loc_prediction) {
-    tr_chooser[chooser_index] = outcome == glb_prediction ? sat_inc(tr_chooser[chooser_index], 2) : sat_dec(tr_chooser[chooser_index], 2);
+    tr_chooser[chooser_index] = outcome == glb_prediction
+                                    ? sat_inc(tr_chooser[chooser_index], 2)
+                                    : sat_dec(tr_chooser[chooser_index], 2);
   }
 
   ghistory = ((ghistory << 1) | outcome);
