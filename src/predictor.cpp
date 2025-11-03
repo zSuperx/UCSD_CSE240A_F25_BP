@@ -28,6 +28,7 @@ const char *bpName[4] = {"Static", "Gshare", "Tournament", "Custom"};
 
 // gshare
 #define GX_GLB_HIST_BITS 15 // Number of bits used for Global History
+int ghistoryBits = 15; // why isn't this a macro..
 
 // tournament
 #define TR_LOC_HIST_BITS 10 // Number of bits used for Local History
@@ -42,15 +43,11 @@ int verbose;
 //      Predictor Data Structures     //
 //------------------------------------//
 
-//
-// TODO: Add your own Branch Predictor data structures here
-//
-
 // used in gshare and tournament
 uint64_t ghistory;
 
 // gshare
-uint8_t gshare_bht[1 << GX_GLB_HIST_BITS];
+uint8_t *bht_gshare;
 
 // tournament
 uint8_t tr_chooser[1 << TR_CHOOSER_BITS]; // chooses between global and local
@@ -151,9 +148,13 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
 
 // gshare functions
 void init_gshare() {
-  for (size_t i = 0; i < (1 << GX_GLB_HIST_BITS); i++)
-    gshare_bht[i] = WN;
-
+  int bht_entries = 1 << ghistoryBits;
+  bht_gshare = (uint8_t *)malloc(bht_entries * sizeof(uint8_t));
+  int i = 0;
+  for (i = 0; i < bht_entries; i++)
+  {
+    bht_gshare[i] = WN;
+  }
   ghistory = 0;
 }
 
@@ -163,7 +164,7 @@ uint8_t gshare_predict(uint32_t pc) {
   uint32_t pc_lower_bits = pc & (bht_entries - 1);
   uint32_t ghistory_lower_bits = ghistory & (bht_entries - 1);
   uint32_t index = pc_lower_bits ^ ghistory_lower_bits;
-  switch (gshare_bht[index]) {
+  switch (bht_gshare[index]) {
   case WN:
     return NOTTAKEN;
   case SN:
@@ -186,18 +187,18 @@ void train_gshare(uint32_t pc, uint8_t outcome) {
   uint32_t index = pc_lower_bits ^ ghistory_lower_bits;
 
   // Update state of entry in bht based on outcome
-  switch (gshare_bht[index]) {
+  switch (bht_gshare[index]) {
   case WN:
-    gshare_bht[index] = (outcome == TAKEN) ? WT : SN;
+    bht_gshare[index] = (outcome == TAKEN) ? WT : SN;
     break;
   case SN:
-    gshare_bht[index] = (outcome == TAKEN) ? WN : SN;
+    bht_gshare[index] = (outcome == TAKEN) ? WN : SN;
     break;
   case WT:
-    gshare_bht[index] = (outcome == TAKEN) ? ST : WN;
+    bht_gshare[index] = (outcome == TAKEN) ? ST : WN;
     break;
   case ST:
-    gshare_bht[index] = (outcome == TAKEN) ? ST : WT;
+    bht_gshare[index] = (outcome == TAKEN) ? ST : WT;
     break;
   default:
     printf("Warning: Undefined state of entry in GSHARE BHT!\n");
