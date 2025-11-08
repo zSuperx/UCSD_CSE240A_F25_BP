@@ -148,96 +148,109 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
 //         Custom Predictor           //
 //------------------------------------//
 
-#define SKEW_HISTORY 13
+#define MY_LOC_HIST_BITS 11 // Number of bits used for Local History
+#define MY_LOC_MASK_BITS 10 // Number of PC bits to use to index into LHT
+#define MY_GLB_HIST_BITS 14 // Number of bits used for Global History
+#define MY_CHOOSER_BITS 13  // Number of bits used for chooser
 
-uint8_t sk_bht0[1 << SKEW_HISTORY];
-uint8_t sk_bht1[1 << SKEW_HISTORY];
-uint8_t sk_bht2[1 << SKEW_HISTORY];
+#define SL 0 // local strong
+#define WL 1 // local weak
+#define WG 2 // global weak
+#define SG 3 // global strong
 
-static inline uint32_t hash(uint32_t x, uint32_t length) {
-  uint32_t lsb = x & 1u;
-  uint32_t msb = (x & (1u << (length - 1))) > 0;
-  return (x >> 1) | ((lsb ^ msb) << (length - 1));
-}
+// chooses between global and local
+uint8_t my_chooser[1 << MY_CHOOSER_BITS];  // ((1 << MY_CHOOSER_BITS) * 2)
+uint16_t my_lht[1 << MY_LOC_MASK_BITS];    // ((1 << MY_LOC_MASK_BITS) *
+                                           // MY_LOC_HIST_BITS)
+uint8_t my_glb_bht[1 << MY_GLB_HIST_BITS]; // ((1 << MY_GLB_HIST_BITS) * 2)
+uint8_t my_loc_bht[1 << MY_LOC_HIST_BITS]; // ((1 << MY_LOC_HIST_BITS) * 3)
 
-static inline uint32_t hash_inv(uint32_t x, uint32_t length) {
-  uint32_t msb = (x & (1u << (length - 1))) > 0;
-  uint32_t prev_msb = (x & (1u << (length - 2))) > 0;
-  return (x << 1) | ((msb ^ prev_msb) & ((1u << length) - 1u));
-}
+static const uint32_t my_size = ((1 << MY_CHOOSER_BITS) * 2) +
+                                ((1 << MY_LOC_MASK_BITS) * MY_LOC_HIST_BITS) +
+                                ((1 << MY_GLB_HIST_BITS) * 2) +
+                                ((1 << MY_LOC_HIST_BITS) * 3);
+
+static_assert(65536 + 1024 >= my_size);
 
 void init_custom() {
-  size_t i;
-  for (i = 0; i < (1 << SKEW_HISTORY); i++) {
-    sk_bht0[i] = WN;
-    sk_bht1[i] = WN;
-    sk_bht2[i] = WN;
-  }
 
+  size_t i;
+
+  // Init chooser table - weakly local
+  for (i = 0; i < (1 << MY_CHOOSER_BITS); i++)
+    my_chooser[i] = WL;
+
+  // Init local bht - weakly not taken
+  for (i = 0; i < (1 << MY_LOC_HIST_BITS); i++)
+    my_loc_bht[i] = 0b011;
+
+  // Init global bht - weakly taken
+  for (i = 0; i < (1 << MY_GLB_HIST_BITS); i++)
+    my_glb_bht[i] = WT;
+
+  // Init local history - all 0s
+  for (i = 0; i < (1 << MY_LOC_MASK_BITS); i++)
+    my_lht[i] = 0x0;
+
+  // Init global history - all 0s
   ghistory = 0;
 }
 
 uint8_t custom_predict(uint32_t pc) {
-  size_t lower_pc = pc & ((1 << SKEW_HISTORY) - 1);
+  uint32_t chooser_index = (ghistory ^ pc) & ((1 << MY_CHOOSER_BITS) - 1);
+  switch (my_chooser[chooser_index]) {
+  case SG:
+  case WG: {
+    // Calculate global prediction
+    uint32_t glb_bht_index = (ghistory ^ pc) & ((1 << MY_GLB_HIST_BITS) - 1);
 
-  uint32_t v1 = lower_pc & ((1 << (SKEW_HISTORY / 2)) - 1);
-  uint32_t v2 =
-      (lower_pc >> (SKEW_HISTORY / 2)) & ((1 << (SKEW_HISTORY / 2)) - 1);
+    return my_glb_bht[glb_bht_index] >> 1;
+  } break;
+  case WL:
+  case SL: {
+    // Calculate local prediction
+    uint32_t loc_bht_index = my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] &
+                             ((1 << MY_LOC_HIST_BITS) - 1);
 
-  uint32_t f0 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v2;
-  uint32_t f1 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v1;
-  uint32_t f2 =
-      hash(v2, (SKEW_HISTORY / 2)) ^ hash_inv(v1, (SKEW_HISTORY / 2)) ^ v2;
-
-  int8_t majority = (sk_bht0[f0] > 1 ? 1 : -1) + (sk_bht1[f1] > 1 ? 1 : -1) +
-                    (sk_bht2[f2] > 1 ? 1 : -1);
-
-  return majority > 0;
+    return my_loc_bht[loc_bht_index] >> 2;
+  } break;
+  default:
+    // printf("Warning: Undefined state of enmyy in custom CHOOSER: %0.3b "
+    //        "=> %d\n",
+    //        my_chooser[chooser_index], my_chooser[chooser_index]);
+    return NOTTAKEN;
+  }
 }
 
 void train_custom(uint32_t pc, uint8_t outcome) {
-  size_t lower_pc = pc & ((1 << SKEW_HISTORY) - 1);
+  uint32_t loc_bht_index = my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] &
+                           ((1 << MY_LOC_HIST_BITS) - 1);
+  uint32_t glb_bht_index = (ghistory ^ pc) & ((1 << MY_GLB_HIST_BITS) - 1);
+  uint32_t chooser_index = (ghistory ^ pc) & ((1 << MY_CHOOSER_BITS) - 1);
 
-  uint32_t v1 = lower_pc & ((1 << (SKEW_HISTORY / 2)) - 1);
-  uint32_t v2 =
-      (lower_pc >> (SKEW_HISTORY / 2)) & ((1 << (SKEW_HISTORY / 2)) - 1);
+  uint8_t old_glb = my_glb_bht[glb_bht_index];
+  uint8_t glb_prediction = old_glb >> 1;
+  uint8_t old_loc = my_loc_bht[loc_bht_index];
+  uint8_t loc_prediction = old_loc >> 2;
 
-  uint32_t f0 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v2;
-  uint32_t f1 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v1;
-  uint32_t f2 =
-      hash(v2, (SKEW_HISTORY / 2)) ^ hash_inv(v1, (SKEW_HISTORY / 2)) ^ v2;
+  // Update global bht
+  my_glb_bht[glb_bht_index] =
+      outcome ? sat_inc(old_glb, 2) : sat_dec(old_glb, 2);
 
-  int8_t majority = (sk_bht0[f0] > 1 ? 1 : -1) + (sk_bht1[f1] > 1 ? 1 : -1) +
-                    (sk_bht2[f2] > 1 ? 1 : -1);
+  // Update local bht
+  my_loc_bht[loc_bht_index] =
+      outcome ? sat_inc(old_loc, 3) : sat_dec(old_loc, 3);
 
-  majority = majority > 0;
-
-  // printf("f0: %0.2b\n"
-  //        "f1: %0.2b\n"
-  //        "f2: %0.2b\n"
-  //        "majority = %0.2b\n\n",
-  //        sk_bht0[f0], sk_bht1[f1], sk_bht2[f2], majority);
-
-  if (majority != outcome) {
-    sk_bht0[f0] = outcome ? sat_inc(sk_bht0[f0], 2) : sat_dec(sk_bht0[f0],
-    2); sk_bht1[f1] = outcome ? sat_inc(sk_bht1[f1], 2) :
-    sat_dec(sk_bht1[f1], 2); sk_bht2[f2] = outcome ? sat_inc(sk_bht2[f2], 2)
-    : sat_dec(sk_bht2[f2], 2);
-  } else {
-    if (sk_bht0[f0] == outcome)
-      sk_bht0[f0] = outcome ? sat_inc(sk_bht0[f0], 2) : sat_dec(sk_bht0[f0],
-      2);
-    if (sk_bht1[f1] == outcome)
-      sk_bht1[f1] = outcome ? sat_inc(sk_bht1[f1], 2) : sat_dec(sk_bht1[f1],
-      2);
-    if (sk_bht2[f2] == outcome)
-      sk_bht2[f2] = outcome ? sat_inc(sk_bht2[f2], 2) : sat_dec(sk_bht2[f2],
-      2);
+  // If global and local guessed differently, then update the correct one
+  if (glb_prediction != loc_prediction) {
+    my_chooser[chooser_index] = outcome == glb_prediction
+                                    ? sat_inc(my_chooser[chooser_index], 2)
+                                    : sat_dec(my_chooser[chooser_index], 2);
   }
+
+  ghistory = ((ghistory << 1) | outcome);
+  my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] =
+      ((my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] << 1) | outcome);
 }
 
 //------------------------------------//
