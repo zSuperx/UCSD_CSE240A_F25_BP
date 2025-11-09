@@ -148,96 +148,146 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
 //         Custom Predictor           //
 //------------------------------------//
 
-#define SKEW_HISTORY 13
+#define CHOICE_SIZE 10
+#define DIRECTION_SIZE 10
 
-uint8_t sk_bht0[1 << SKEW_HISTORY];
-uint8_t sk_bht1[1 << SKEW_HISTORY];
-uint8_t sk_bht2[1 << SKEW_HISTORY];
+typedef struct {
+  uint32_t addr;
+  uint8_t counter;
+} Entry;
 
-static inline uint32_t hash(uint32_t x, uint32_t length) {
-  uint32_t lsb = x & 1u;
-  uint32_t msb = (x & (1u << (length - 1))) > 0;
-  return (x >> 1) | ((lsb ^ msb) << (length - 1));
-}
+uint8_t yg_choice[1 << CHOICE_SIZE];
+Entry yg_taken[1 << DIRECTION_SIZE];
+Entry yg_not_taken[1 << DIRECTION_SIZE];
 
-static inline uint32_t hash_inv(uint32_t x, uint32_t length) {
-  uint32_t msb = (x & (1u << (length - 1))) > 0;
-  uint32_t prev_msb = (x & (1u << (length - 2))) > 0;
-  return (x << 1) | ((msb ^ prev_msb) & ((1u << length) - 1u));
-}
+uint8_t yg_taken_lru[1 << (DIRECTION_SIZE - 1)];
+uint8_t yg_not_taken_lru[1 << (DIRECTION_SIZE - 1)];
 
 void init_custom() {
+
   size_t i;
-  for (i = 0; i < (1 << SKEW_HISTORY); i++) {
-    sk_bht0[i] = WN;
-    sk_bht1[i] = WN;
-    sk_bht2[i] = WN;
+
+  for (i = 0; i < (1 << CHOICE_SIZE); i++) {
+    yg_choice[i] = WN;
+  }
+
+  for (i = 0; i < (1 << (DIRECTION_SIZE - 1)); i++) {
+    yg_taken_lru[i] = 0;
+    yg_not_taken_lru[i] = 0;
+  }
+
+  for (i = 0; i < (1 << DIRECTION_SIZE); i++) {
+    yg_taken[i] = {
+        0x0,
+        WN,
+    };
+    yg_not_taken[i] = {
+        0x0,
+        WT,
+    };
   }
 
   ghistory = 0;
 }
 
 uint8_t custom_predict(uint32_t pc) {
-  size_t lower_pc = pc & ((1 << SKEW_HISTORY) - 1);
 
-  uint32_t v1 = lower_pc & ((1 << (SKEW_HISTORY / 2)) - 1);
-  uint32_t v2 =
-      (lower_pc >> (SKEW_HISTORY / 2)) & ((1 << (SKEW_HISTORY / 2)) - 1);
+  size_t choice_index = (pc ^ ghistory) & ((1 << CHOICE_SIZE) - 1);
 
-  uint32_t f0 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v2;
-  uint32_t f1 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v1;
-  uint32_t f2 =
-      hash(v2, (SKEW_HISTORY / 2)) ^ hash_inv(v1, (SKEW_HISTORY / 2)) ^ v2;
+  uint8_t choice = yg_choice[choice_index];
+  Entry *search_table;
 
-  int8_t majority = (sk_bht0[f0] > 1 ? 1 : -1) + (sk_bht1[f1] > 1 ? 1 : -1) +
-                    (sk_bht2[f2] > 1 ? 1 : -1);
+  switch (choice) {
+  case ST:
+  case WT: {
+    search_table = yg_not_taken;
+  } break;
 
-  return majority > 0;
+  case WN:
+  case SN: {
+    search_table = yg_taken;
+  } break;
+
+  default:
+    printf("Invalid value in YAGS CHOICE TABLE\n");
+    return NOTTAKEN;
+  }
+
+  // 2-way set associative lookup in opposite table. Look for pc to see if its
+  // known to disobey choice table. If found, use its counter
+
+  // Get lower DIRECTION_SIZE - 1 bits of pc. This identifies the set
+  size_t set_index = pc & ((1 << (DIRECTION_SIZE - 1)) - 1);
+  // Shift left by 1 to account for 2-way
+  size_t base = set_index << 1;
+
+  if (search_table[base].addr == pc) {
+    return search_table[base].counter > 1 ? TAKEN : NOTTAKEN;
+  } else if (search_table[base + 1].addr == pc) {
+    return search_table[base + 1].counter > 1 ? TAKEN : NOTTAKEN;
+  }
+
+  // If pc not found in opposite table, use initial choice
+  return choice > 1 ? TAKEN : NOTTAKEN;
 }
 
-void train_custom(uint32_t pc, uint8_t outcome) {
-  size_t lower_pc = pc & ((1 << SKEW_HISTORY) - 1);
+void train_custom(uint32_t pc, uint32_t outcome) {
 
-  uint32_t v1 = lower_pc & ((1 << (SKEW_HISTORY / 2)) - 1);
-  uint32_t v2 =
-      (lower_pc >> (SKEW_HISTORY / 2)) & ((1 << (SKEW_HISTORY / 2)) - 1);
+  size_t choice_index = (pc ^ ghistory) & ((1 << CHOICE_SIZE) - 1);
 
-  uint32_t f0 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v2;
-  uint32_t f1 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v1;
-  uint32_t f2 =
-      hash(v2, (SKEW_HISTORY / 2)) ^ hash_inv(v1, (SKEW_HISTORY / 2)) ^ v2;
+  uint8_t choice = yg_choice[choice_index];
+  Entry *search_table;
+  uint8_t *search_table_lru;
 
-  int8_t majority = (sk_bht0[f0] > 1 ? 1 : -1) + (sk_bht1[f1] > 1 ? 1 : -1) +
-                    (sk_bht2[f2] > 1 ? 1 : -1);
+  switch (choice) {
+  case ST:
+  case WT: {
+    search_table = yg_not_taken;
+    search_table_lru = yg_not_taken_lru;
+  } break;
 
-  majority = majority > 0;
+  case WN:
+  case SN: {
+    search_table = yg_taken;
+    search_table_lru = yg_taken_lru;
+  } break;
 
-  // printf("f0: %0.2b\n"
-  //        "f1: %0.2b\n"
-  //        "f2: %0.2b\n"
-  //        "majority = %0.2b\n\n",
-  //        sk_bht0[f0], sk_bht1[f1], sk_bht2[f2], majority);
-
-  if (majority != outcome) {
-    sk_bht0[f0] = outcome ? sat_inc(sk_bht0[f0], 2) : sat_dec(sk_bht0[f0],
-    2); sk_bht1[f1] = outcome ? sat_inc(sk_bht1[f1], 2) :
-    sat_dec(sk_bht1[f1], 2); sk_bht2[f2] = outcome ? sat_inc(sk_bht2[f2], 2)
-    : sat_dec(sk_bht2[f2], 2);
-  } else {
-    if (sk_bht0[f0] == outcome)
-      sk_bht0[f0] = outcome ? sat_inc(sk_bht0[f0], 2) : sat_dec(sk_bht0[f0],
-      2);
-    if (sk_bht1[f1] == outcome)
-      sk_bht1[f1] = outcome ? sat_inc(sk_bht1[f1], 2) : sat_dec(sk_bht1[f1],
-      2);
-    if (sk_bht2[f2] == outcome)
-      sk_bht2[f2] = outcome ? sat_inc(sk_bht2[f2], 2) : sat_dec(sk_bht2[f2],
-      2);
+  default:
+    printf("Invalid value in YAGS CHOICE TABLE\n");
+    return;
   }
+
+  // Get lower DIRECTION_SIZE - 1 bits of pc. This identifies the set
+  size_t set_index = pc & ((1 << (DIRECTION_SIZE - 1)) - 1);
+  // Shift left by 1 to account for 2-way
+  size_t base = set_index << 1;
+
+  // If pc disobeyed choice, add it to opposite table
+  if ((choice > 1) != outcome) {
+    if (search_table[base].addr == pc) {
+      search_table[base].counter = outcome
+                                       ? sat_inc(search_table[base].counter, 2)
+                                       : sat_dec(search_table[base].counter, 2);
+      // Update LRU
+      search_table_lru[set_index] = 1;
+    } else if (search_table[base + 1].addr == pc) {
+      search_table[base + 1].counter =
+          outcome ? sat_inc(search_table[base + 1].counter, 2)
+                  : sat_dec(search_table[base + 1].counter, 2);
+      // Update LRU
+      search_table_lru[set_index] = 0;
+    } else {
+      search_table[base + search_table_lru[set_index]] = {
+          pc,
+          WN,
+      };
+
+      search_table_lru[set_index] = !search_table_lru[set_index];
+    }
+  }
+
+  yg_choice[choice_index] = outcome ? sat_inc(yg_choice[choice_index], 2)
+                                    : sat_dec(yg_choice[choice_index], 2);
 }
 
 //------------------------------------//
