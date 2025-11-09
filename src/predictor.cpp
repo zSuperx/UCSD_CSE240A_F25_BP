@@ -148,96 +148,49 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
 //         Custom Predictor           //
 //------------------------------------//
 
-#define SKEW_HISTORY 13
+#define PHR_BITS 15
 
-uint8_t sk_bht0[1 << SKEW_HISTORY];
-uint8_t sk_bht1[1 << SKEW_HISTORY];
-uint8_t sk_bht2[1 << SKEW_HISTORY];
-
-static inline uint32_t hash(uint32_t x, uint32_t length) {
-  uint32_t lsb = x & 1u;
-  uint32_t msb = (x & (1u << (length - 1))) > 0;
-  return (x >> 1) | ((lsb ^ msb) << (length - 1));
-}
-
-static inline uint32_t hash_inv(uint32_t x, uint32_t length) {
-  uint32_t msb = (x & (1u << (length - 1))) > 0;
-  uint32_t prev_msb = (x & (1u << (length - 2))) > 0;
-  return (x << 1) | ((msb ^ prev_msb) & ((1u << length) - 1u));
-}
+uint8_t bht_phr[1 << PHR_BITS];
+uint64_t phr;
 
 void init_custom() {
-  size_t i;
-  for (i = 0; i < (1 << SKEW_HISTORY); i++) {
-    sk_bht0[i] = WN;
-    sk_bht1[i] = WN;
-    sk_bht2[i] = WN;
+  size_t i = 0;
+  for (i = 0; i < 1 << PHR_BITS; i++) {
+    bht_phr[i] = WN;
   }
-
+  phr = 0;
   ghistory = 0;
 }
 
 uint8_t custom_predict(uint32_t pc) {
-  size_t lower_pc = pc & ((1 << SKEW_HISTORY) - 1);
-
-  uint32_t v1 = lower_pc & ((1 << (SKEW_HISTORY / 2)) - 1);
-  uint32_t v2 =
-      (lower_pc >> (SKEW_HISTORY / 2)) & ((1 << (SKEW_HISTORY / 2)) - 1);
-
-  uint32_t f0 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v2;
-  uint32_t f1 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v1;
-  uint32_t f2 =
-      hash(v2, (SKEW_HISTORY / 2)) ^ hash_inv(v1, (SKEW_HISTORY / 2)) ^ v2;
-
-  int8_t majority = (sk_bht0[f0] > 1 ? 1 : -1) + (sk_bht1[f1] > 1 ? 1 : -1) +
-                    (sk_bht2[f2] > 1 ? 1 : -1);
-
-  return majority > 0;
+  uint32_t index = (phr ^ pc) & ((1 << PHR_BITS) - 1);
+  switch (bht_phr[index]) {
+  case WN:
+  case SN:
+    return NOTTAKEN;
+  case WT:
+  case ST:
+    return TAKEN;
+  default:
+    printf("Warning: Undefined state of entry in CUSTOM BHT! %d \n",
+           bht_phr[index]);
+    return NOTTAKEN;
+  }
 }
 
-void train_custom(uint32_t pc, uint8_t outcome) {
-  size_t lower_pc = pc & ((1 << SKEW_HISTORY) - 1);
+void train_custom(uint32_t pc, uint32_t outcome, uint32_t target) {
+  uint32_t index = (phr ^ pc) & ((1 << PHR_BITS) - 1);
+  bht_phr[index] =
+      outcome ? sat_inc(bht_phr[index], 2) : sat_dec(bht_phr[index], 2);
 
-  uint32_t v1 = lower_pc & ((1 << (SKEW_HISTORY / 2)) - 1);
-  uint32_t v2 =
-      (lower_pc >> (SKEW_HISTORY / 2)) & ((1 << (SKEW_HISTORY / 2)) - 1);
+  uint16_t footprint = ((pc & 0b1111100000000000)) |
+                       ((pc & 0b0000011111111000) >> 3) |
+                       ((pc & 0b0000000000000111) << 8);
+  footprint = footprint ^ (target & 0b0000000000000011) ^
+              ((target & 0b0000000000111100) << 6);
 
-  uint32_t f0 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v2;
-  uint32_t f1 =
-      hash(v1, (SKEW_HISTORY / 2)) ^ hash_inv(v2, (SKEW_HISTORY / 2)) ^ v1;
-  uint32_t f2 =
-      hash(v2, (SKEW_HISTORY / 2)) ^ hash_inv(v1, (SKEW_HISTORY / 2)) ^ v2;
-
-  int8_t majority = (sk_bht0[f0] > 1 ? 1 : -1) + (sk_bht1[f1] > 1 ? 1 : -1) +
-                    (sk_bht2[f2] > 1 ? 1 : -1);
-
-  majority = majority > 0;
-
-  // printf("f0: %0.2b\n"
-  //        "f1: %0.2b\n"
-  //        "f2: %0.2b\n"
-  //        "majority = %0.2b\n\n",
-  //        sk_bht0[f0], sk_bht1[f1], sk_bht2[f2], majority);
-
-  if (majority != outcome) {
-    sk_bht0[f0] = outcome ? sat_inc(sk_bht0[f0], 2) : sat_dec(sk_bht0[f0],
-    2); sk_bht1[f1] = outcome ? sat_inc(sk_bht1[f1], 2) :
-    sat_dec(sk_bht1[f1], 2); sk_bht2[f2] = outcome ? sat_inc(sk_bht2[f2], 2)
-    : sat_dec(sk_bht2[f2], 2);
-  } else {
-    if (sk_bht0[f0] == outcome)
-      sk_bht0[f0] = outcome ? sat_inc(sk_bht0[f0], 2) : sat_dec(sk_bht0[f0],
-      2);
-    if (sk_bht1[f1] == outcome)
-      sk_bht1[f1] = outcome ? sat_inc(sk_bht1[f1], 2) : sat_dec(sk_bht1[f1],
-      2);
-    if (sk_bht2[f2] == outcome)
-      sk_bht2[f2] = outcome ? sat_inc(sk_bht2[f2], 2) : sat_dec(sk_bht2[f2],
-      2);
-  }
+  phr = (phr << 2) ^ footprint;
+  ghistory = ((ghistory << 1) | outcome);
 }
 
 //------------------------------------//
@@ -371,7 +324,7 @@ void train_predictor(uint32_t pc, uint32_t target, uint32_t outcome,
     case TOURNAMENT:
       return train_tournament(pc, outcome);
     case CUSTOM:
-      return train_custom(pc, outcome);
+      return train_custom(pc, outcome, target);
     default:
       break;
     }
