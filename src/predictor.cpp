@@ -149,8 +149,8 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
 //------------------------------------//
 
 #define MY_LOC_HIST_BITS 11 // Number of bits used for Local History
-#define MY_LOC_MASK_BITS 10 // Number of PC bits to use to index into LHT
-#define MY_GLB_HIST_BITS 14 // Number of bits used for Global History
+#define MY_LOC_MASK_BITS 11 // Number of PC bits to use to index into LHT
+#define MY_GLB_HIST_BITS 13 // Number of bits used for Global History
 #define MY_CHOOSER_BITS 13  // Number of bits used for chooser
 
 #define SL 0 // local strong
