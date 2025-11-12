@@ -66,7 +66,7 @@ uint8_t tr_loc_bht[1 << TR_LOC_HIST_BITS]; // ((1 << TR_LOC_HIST_BITS) * 3)
 static_assert(65536 + 1024 >= ((1 << TR_CHOOSER_BITS) * 2) +
                                   ((1 << TR_LOC_MASK_BITS) * TR_LOC_HIST_BITS) +
                                   ((1 << TR_GLB_HIST_BITS) * 2) +
-                                  ((1 << TR_LOC_HIST_BITS) * 3));
+                                  ((1 << TR_LOC_HIST_BITS) * 3) + TR_GLB_HIST_BITS);
 
 void init_tournament() {
 
@@ -148,10 +148,10 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
 //         Custom Predictor           //
 //------------------------------------//
 
-#define MY_LOC_HIST_BITS 11 // Number of bits used for Local History
+#define MY_LOC_HIST_BITS 10 // Number of bits used for Local History
 #define MY_LOC_MASK_BITS 11 // Number of PC bits to use to index into LHT
-#define MY_GLB_HIST_BITS 13 // Number of bits used for Global History
-#define MY_CHOOSER_BITS 13  // Number of bits used for chooser
+#define MY_GLB_HIST_BITS 14 // Number of bits used for Global History
+#define MY_CHOOSER_BITS 12  // Number of bits used for chooser
 
 #define SL 0 // local strong
 #define WL 1 // local weak
@@ -168,7 +168,7 @@ uint8_t my_loc_bht[1 << MY_LOC_HIST_BITS]; // ((1 << MY_LOC_HIST_BITS) * 3)
 static const uint32_t my_size = ((1 << MY_CHOOSER_BITS) * 2) +
                                 ((1 << MY_LOC_MASK_BITS) * MY_LOC_HIST_BITS) +
                                 ((1 << MY_GLB_HIST_BITS) * 2) +
-                                ((1 << MY_LOC_HIST_BITS) * 3);
+                                ((1 << MY_LOC_HIST_BITS) * 3) + MY_GLB_HIST_BITS;
 
 static_assert(65536 + 1024 >= my_size);
 
