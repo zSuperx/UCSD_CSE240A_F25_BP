@@ -148,40 +148,108 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
 //         Custom Predictor           //
 //------------------------------------//
 
-#define PHR_BITS 15
+#define MY_LOC_HIST_BITS 11 // Number of bits used for Local History
+#define MY_LOC_MASK_BITS 10 // Number of PC bits to use to index into LHT
+#define MY_GLB_HIST_BITS 14 // Number of bits used for Global History
+#define MY_CHOOSER_BITS 13  // Number of bits used for chooser
 
-uint8_t bht_phr[1 << PHR_BITS];
+#define SL 0 // local strong
+#define WL 1 // local weak
+#define WG 2 // global weak
+#define SG 3 // global strong
+
+// chooses between global and local
+uint8_t my_chooser[1 << MY_CHOOSER_BITS];  // ((1 << MY_CHOOSER_BITS) * 2)
+uint16_t my_lht[1 << MY_LOC_MASK_BITS];    // ((1 << MY_LOC_MASK_BITS) *
+                                           // MY_LOC_HIST_BITS)
+uint8_t my_glb_bht[1 << MY_GLB_HIST_BITS]; // ((1 << MY_GLB_HIST_BITS) * 2)
+uint8_t my_loc_bht[1 << MY_LOC_HIST_BITS]; // ((1 << MY_LOC_HIST_BITS) * 3)
+
+static const uint32_t my_size = ((1 << MY_CHOOSER_BITS) * 2) +
+                                ((1 << MY_LOC_MASK_BITS) * MY_LOC_HIST_BITS) +
+                                ((1 << MY_GLB_HIST_BITS) * 2) +
+                                ((1 << MY_LOC_HIST_BITS) * 3);
+
 uint64_t phr;
+static_assert(65536 + 1024 >= my_size);
 
 void init_custom() {
-  size_t i = 0;
-  for (i = 0; i < 1 << PHR_BITS; i++) {
-    bht_phr[i] = WN;
-  }
-  phr = 0;
+
+  size_t i;
+
+  // Init chooser table - weakly local
+  for (i = 0; i < (1 << MY_CHOOSER_BITS); i++)
+    my_chooser[i] = WL;
+
+  // Init local bht - weakly not taken
+  for (i = 0; i < (1 << MY_LOC_HIST_BITS); i++)
+    my_loc_bht[i] = 0b011;
+
+  // Init global bht - weakly taken
+  for (i = 0; i < (1 << MY_GLB_HIST_BITS); i++)
+    my_glb_bht[i] = WT;
+
+  // Init local history - all 0s
+  for (i = 0; i < (1 << MY_LOC_MASK_BITS); i++)
+    my_lht[i] = 0x0;
+
+  // Init global history - all 0s
   ghistory = 0;
+  phr = 0;
 }
 
 uint8_t custom_predict(uint32_t pc) {
-  uint32_t index = (phr ^ pc) & ((1 << PHR_BITS) - 1);
-  switch (bht_phr[index]) {
-  case WN:
-  case SN:
-    return NOTTAKEN;
-  case WT:
-  case ST:
-    return TAKEN;
+  uint32_t glb_bht_index = (phr ^ pc) & ((1 << MY_GLB_HIST_BITS) - 1);
+  uint32_t chooser_index = (phr ^ pc) & ((1 << MY_CHOOSER_BITS) - 1);
+  switch (my_chooser[chooser_index]) {
+  case SG:
+  case WG: {
+    // Calculate global prediction
+    return my_glb_bht[glb_bht_index] > 1;
+  } break;
+  case WL:
+  case SL: {
+    // Calculate local prediction
+    uint32_t loc_bht_index = my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] &
+                             ((1 << MY_LOC_HIST_BITS) - 1);
+
+    return my_loc_bht[loc_bht_index] > 3;
+  } break;
   default:
-    printf("Warning: Undefined state of entry in CUSTOM BHT! %d \n",
-           bht_phr[index]);
+    // printf("Warning: Undefined state of enmyy in custom CHOOSER: %0.3b "
+    //        "=> %d\n",
+    //        my_chooser[chooser_index], my_chooser[chooser_index]);
     return NOTTAKEN;
   }
 }
 
-void train_custom(uint32_t pc, uint32_t outcome, uint32_t target) {
-  uint32_t index = (phr ^ pc) & ((1 << PHR_BITS) - 1);
-  bht_phr[index] =
-      outcome ? sat_inc(bht_phr[index], 2) : sat_dec(bht_phr[index], 2);
+void train_custom(uint32_t pc, uint32_t target, uint32_t outcome,
+                  uint32_t condition, uint32_t call, uint32_t ret,
+                  uint32_t direct) {
+  uint32_t loc_bht_index = my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] &
+                           ((1 << MY_LOC_HIST_BITS) - 1);
+  uint32_t glb_bht_index = (phr ^ pc) & ((1 << MY_GLB_HIST_BITS) - 1);
+  uint32_t chooser_index = (phr ^ pc) & ((1 << MY_CHOOSER_BITS) - 1);
+
+  uint8_t old_glb = my_glb_bht[glb_bht_index];
+  uint8_t glb_prediction = old_glb >> 1;
+  uint8_t old_loc = my_loc_bht[loc_bht_index];
+  uint8_t loc_prediction = old_loc >> 2;
+
+  // Update global bht
+  my_glb_bht[glb_bht_index] =
+      outcome ? sat_inc(old_glb, 2) : sat_dec(old_glb, 2);
+
+  // Update local bht
+  my_loc_bht[loc_bht_index] =
+      outcome ? sat_inc(old_loc, 3) : sat_dec(old_loc, 3);
+
+  // If global and local guessed differently, then update the correct one
+  if (glb_prediction != loc_prediction) {
+    my_chooser[chooser_index] = outcome == glb_prediction
+                                    ? sat_inc(my_chooser[chooser_index], 2)
+                                    : sat_dec(my_chooser[chooser_index], 2);
+  }
 
   uint16_t footprint = ((pc & 0b1111100000000000)) |
                        ((pc & 0b0000011111111000) >> 3) |
@@ -189,8 +257,10 @@ void train_custom(uint32_t pc, uint32_t outcome, uint32_t target) {
   footprint = footprint ^ (target & 0b0000000000000011) ^
               ((target & 0b0000000000111100) << 6);
 
-  phr = (phr << 2) ^ footprint;
-  ghistory = ((ghistory << 1) | outcome);
+  phr = (((phr << 2) ^ footprint) & ((1u << MY_GLB_HIST_BITS) - 1));
+
+  my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] =
+      ((my_lht[pc & ((1 << MY_LOC_MASK_BITS) - 1)] << 1) | outcome);
 }
 
 //------------------------------------//
@@ -324,7 +394,7 @@ void train_predictor(uint32_t pc, uint32_t target, uint32_t outcome,
     case TOURNAMENT:
       return train_tournament(pc, outcome);
     case CUSTOM:
-      return train_custom(pc, outcome, target);
+      return train_custom(pc, target, outcome, condition, call, ret, direct);
     default:
       break;
     }
