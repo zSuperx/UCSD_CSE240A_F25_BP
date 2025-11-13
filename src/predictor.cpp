@@ -154,6 +154,10 @@ uint8_t sk_bht0[1 << SKEW_HISTORY];
 uint8_t sk_bht1[1 << SKEW_HISTORY];
 uint8_t sk_bht2[1 << SKEW_HISTORY];
 
+constexpr uint32_t skew_size = (1 << SKEW_HISTORY) * 2 * 3;
+
+static_assert(66560 >= skew_size);
+
 static inline uint32_t hash(uint32_t x, uint32_t length) {
   uint32_t lsb = x & 1u;
   uint32_t msb = (x & (1u << (length - 1))) > 0;
